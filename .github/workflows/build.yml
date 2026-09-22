@@ -78,6 +78,19 @@ jobs:
         working-directory: port
         run: ./build/build.sh
 
+      # boot.img sudah membawa vbmeta ber-append (deviceinfo_bootimg_append_vbmeta),
+      # tapi partition vbmeta tetap perlu image "verification disabled" supaya AVB
+      # tidak menolak system.img yang tidak bertanda tangan vendor.
+      # Dibuat di sini supaya kamu tidak perlu cari vbmeta_disabled.img dari
+      # sumber pihak ketiga. avbtool sudah ada dari setup_repositories.sh.
+      - name: Buat vbmeta_disabled.img
+        working-directory: port
+        run: |
+          python3 workdir/downloads/avb/avbtool make_vbmeta_image \
+            --flags 3 --padding_size 4096 -o out/vbmeta_disabled.img
+          python3 workdir/downloads/avb/avbtool info_image \
+            --image out/vbmeta_disabled.img || true
+
       - name: Tampilkan hasil
         run: ls -lh port/out
 
@@ -86,9 +99,9 @@ jobs:
         with:
           name: ${{ inputs.device || 'angelica' }}-build
           path: |
-            port/out/*.img
             port/out/device_*.tar.xz
             port/out/Module.symvers
+            port/out/vbmeta_disabled.img
           if-no-files-found: error
           retention-days: 14
 

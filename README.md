@@ -25,7 +25,11 @@ device tarball. Rootfs-nya dirakit dari CI UBports di job kedua.
 ├── scripts/prepare-port.sh       # clone repo port + build tools, terapkan overrides/
 ├── scripts/make-rootfs.sh        # rakit rootfs siap-flash dari device tarball
 ├── overrides/                    # (opsional) timpa file repo port tanpa fork
-└── docs/ubuntu-touch-angelica/   # catatan porting & flashing
+└── docs/ubuntu-touch-angelica/   # catatan porting, flashing & debugging
+    ├── README.md                 #   panduan utama
+    ├── debugging.md              #   tes boot & ambil log
+    ├── gitlab-ci.md              #   alternatif build via GitLab CI
+    └── github-actions.md         #   penjelasan workflow di repo ini
 ```
 
 ## Kenapa bisa jalan di GitHub Actions?
@@ -91,57 +95,95 @@ Variabel environment yang dikenali `prepare-port.sh`: `DEVICE`
 
 ## 3. Artefak yang dihasilkan
 
-**`<device>-build`** (job `build`):
+**`<device>-build`** (job `build`) — ini bahan mentah, **bukan** untuk flashing:
 
 | File | Isi |
 |---|---|
-| `boot.img` | kernel MT6765 + ramdisk halium (DTB `mt6765`/`angelica` tertanam di dalamnya) |
-| `recovery.img` | recovery halium untuk flashing/install |
-| `device_angelica.tar.xz` | device tarball: overlay + blob firmware dari device |
+| `device_angelica.tar.xz` | device tarball. Isinya dua folder: `system/` (overlay + blob dari device) dan `partitions/` (`boot.img`, `recovery.img`, `dtbo.img`) |
+| `device_angelica_usrmerge.tar.xz` | hardlink ke file di atas, nama lama untuk pipeline yang belum di-update |
 | `Module.symvers` | simbol kernel (untuk debug modul) |
+| `vbmeta_disabled.img` | vbmeta ber-flag 3 (verification + hashtree disabled) — dibuat workflow pakai `avbtool` |
 
-**`<device>-flashable`** (job `rootfs`):
+Perhatikan: `boot.img` **tidak** ada sebagai file lepas di sini. `build.sh` hanya
+menaruhnya di dalam `partitions/` lalu memasukkannya ke device tarball.
+
+**`<device>-flashable`** (job `rootfs`) — **inilah yang kamu pakai untuk flashing**:
 
 | File | Isi |
 |---|---|
-| `ubuntu.img.zst` | rootfs ext4 raw, dikompres zstd — `zstd -d` dulu sebelum dipakai |
-| `system.img` | rootfs yang sama dalam format **sparse**, langsung bisa `fastboot flash` |
+| `boot.img` | kernel MT6765 + ramdisk halium, DTB tertanam, AVB hash footer + vbmeta ber-append |
+| `dtbo.img` | DTB `mt6765`/`angelica` untuk partisi `dtbo` |
+| `recovery.img` | UBports recovery. **Opsional** — lihat catatan di bawah |
+| `system.img` | rootfs ext4 dalam format **sparse**, langsung bisa `fastboot flash` |
+| `ubuntu.img.zst` | rootfs yang sama tapi ext4 **raw** + zstd (`zstd -d` kalau mau versi mentah) |
+| `vbmeta_disabled.img` | untuk `vbmeta` / `vbmeta_system` / `vbmeta_vendor` |
 
-> Angelica **tidak** menghasilkan `dtbo.img` terpisah: `deviceinfo`-nya tidak
-> mendefinisikan `deviceinfo_dtbo`, dan DTB sudah ikut tertanam di `boot.img`.
-> `recovery_dtbo_angelica.img` di repo port hanya blob sisa tool versi lama.
+> `boot.img`/`recovery.img`/`dtbo.img` masuk ke artefak ini lewat jalur yang tidak
+> kelihatan: `system-image-from-ota.sh` mengekstrak device tarball lalu menjalankan
+> `cp partitions/* out/`.
+>
+> **`dtbo.img` ada** — `deviceinfo` angelica mendefinisikan
+> `deviceinfo_dtbo="mediatek/mt6765.dtb mediatek/angelica.dtb"` dan
+> `deviceinfo_skip_dtbo_partition` tidak di-set, jadi `make-dtboimage.sh` jalan.
+> Yang **tidak** dipakai adalah `deviceinfo_recovery_dtbo` (dan file
+> `recovery_dtbo_angelica.img`): tidak ada satu pun tool di build-tools yang
+> membacanya — di `make-bootimage.sh` variabelnya cuma `--recovery_dtbo $DTBO`,
+> yang isinya `partitions/dtbo.img`.
 
 ## 4. Flashing singkat
 
 Bootloader harus sudah di-unlock, dan sebaiknya device pernah boot MIUI sekali
 supaya partisinya ter-init.
 
+**Prasyarat**: firmware Android 10 (MIUI **12.0.22** untuk 9C) — bukan MIUI 12.5/13.
+Kalau sekarang masih Android 11+, flash balik stock A10 dulu.
+
 ```bash
 adb reboot bootloader
 
-# matikan verified boot, kalau tidak bootloop karena boot.img ber-append vbmeta
+# 1) matikan verified boot
 fastboot flash vbmeta vbmeta_disabled.img
 fastboot flash vbmeta_system vbmeta_disabled.img
 fastboot flash vbmeta_vendor vbmeta_disabled.img
 
+# 2) boot + dtbo — rootfs BELUM, supaya kalau gagal kamu hemat satu flash besar
 fastboot flash boot boot.img
-fastboot flash recovery recovery.img
+fastboot flash dtbo dtbo.img
+fastboot reboot            # lihat dulu nomor seri USB — lihat debugging.md §2
+```
 
-# rootfs ke partisi system — wajib lewat fastbootd (dynamic partitions)
-zstd -d ubuntu.img.zst                     # atau pakai system.img langsung
+Kalau seri USB berubah jadi `Mer Debug telnet on port 23 on usb0 192.168.2.15`
+atau muncul logo UBports, kernel + initramfs hidup. Lanjut:
+
+```bash
+# 3) rootfs ke partisi system — wajib lewat fastbootd (dynamic partitions)
 fastboot reboot fastboot
+fastboot delete-logical-partition product   # beri ruang untuk system
 fastboot flash system system.img
 fastboot reboot
 ```
 
-`vbmeta_disabled.img` bisa dibuat sendiri:
+> **Ubuntu Touch bukan ROM Android** — tidak ada zip yang di-flash lewat
+> TWRP/OrangeFox. Rootfs UT itu image ext4 mentah yang ditulis ke blok partisi
+> `system`.
+>
+> **Baris `fastboot flash recovery` sengaja tidak ada di atas.** Partisi
+> `recovery` terpisah dari `boot`/`system`, jadi kamu bisa mempertahankan
+> OrangeFox (untuk nandroid backup/restore) sambil mencoba UT. `recovery.img`
+> bikinan kita adalah UBports recovery yang hanya perlu untuk jalur OTA resmi,
+> sedangkan rootfs **tetap** lewat `fastbootd` — recovery berbasis TWRP sering
+> gagal menulis image besar ke logical partition.
 
-```bash
-avbtool make_vbmeta_image --flags 3 --padding_size 4096 -o vbmeta_disabled.img
-```
+`delete-logical-partition product` menghapus partisi `product` (tidak dipakai UT)
+supaya `system` dapat ruang di dalam `super`. Kalau sebenarnya `product` tidak ada,
+perintahnya cuma melaporkan partisi tidak ditemukan — tidak berbahaya. Konsekuensinya
+kamu perlu flash stock ROM untuk mengembalikannya.
 
-Detail lengkap + troubleshooting ada di
-[`docs/ubuntu-touch-angelica/README.md`](docs/ubuntu-touch-angelica/README.md).
+Detail lengkap ada di [`docs/ubuntu-touch-angelica/README.md`](docs/ubuntu-touch-angelica/README.md).
+
+**Kalau bootloop / tidak booting** → [`docs/ubuntu-touch-angelica/debugging.md`](docs/ubuntu-touch-angelica/debugging.md):
+urutan cek tanpa device, peta gejala → alat, dan cara ambil `console-ramoops`,
+`diagnosis.log`, serta `journalctl` dari device.
 
 ## 5. Kustomisasi tanpa fork
 
