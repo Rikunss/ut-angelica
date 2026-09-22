@@ -1,0 +1,138 @@
+# Build Ubuntu Touch untuk Xiaomi Redmi 9C (angelica) — sekaligus Redmi 9A (dandelion).
+#
+# Repo ini TIDAK menyimpan source port. Saat build, runner meng-clone source resmi
+# dari GitLab UBports — lihat scripts/prepare-port.sh untuk daftar lengkapnya.
+#
+# Job:
+#   build  -> kernel MT6765 + boot.img + recovery.img + device tarball
+#   rootfs -> ubuntu.img.zst + system.img (rootfs siap flash), dibuat dari device tarball
+name: Ubuntu Touch (angelica)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      device:
+        description: Varian deviceinfo
+        type: choice
+        default: angelica
+        options:
+          - angelica
+          - dandelion
+      make_rootfs:
+        description: Sekalian rakit rootfs yang siap flash
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DEVICE: ${{ inputs.device || 'angelica' }}
+  PORT_DIR: port
+
+jobs:
+  build:
+    name: build (${{ inputs.device || 'angelica' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      # Kernel + toolchain bisa >10 GB; runner hanya menyediakan ~14 GB bebas.
+      - name: Kosongkan disk runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Pasang dependensi build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio curl fakeroot flex git \
+            kmod libelf-dev libssl-dev libtinfo5 lz4 python2 python3 sudo unzip \
+            wget xz-utils pahole libbpf-dev
+          sudo ln -sf python2 /usr/bin/python
+
+      - name: Siapkan source port + build tools
+        run: bash scripts/prepare-port.sh
+
+      # Berisi clang/gcc prebuilt, avbtool, mkbootimg, dan source kernel MT6765 —
+      # beberapa GB, jadi menghemat puluhan menit per build.
+      #
+      # Key sengaja unik per run supaya cache-nya selalu tersimpan ulang;
+      # restore-keys yang membuat run berikutnya memakai cache run sebelumnya.
+      # Kalau toolchain terasa basi, ubah prefix key (mis. jadi ut-v2-...).
+      - name: Cache toolchain + source kernel
+        uses: actions/cache@v4
+        with:
+          path: port/workdir/downloads
+          key: ut-${{ inputs.device || 'angelica' }}-${{ github.run_id }}
+          restore-keys: |
+            ut-${{ inputs.device || 'angelica' }}-
+
+      - name: Build kernel + boot.img + device tarball
+        working-directory: port
+        run: ./build/build.sh
+
+      - name: Tampilkan hasil
+        run: ls -lh port/out
+
+      - name: Upload artefak build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.device || 'angelica' }}-build
+          path: |
+            port/out/*.img
+            port/out/device_*.tar.xz
+            port/out/Module.symvers
+          if-no-files-found: error
+          retention-days: 14
+
+  rootfs:
+    name: rootfs (${{ inputs.device || 'angelica' }})
+    needs: build
+    if: ${{ github.event_name == 'push' || inputs.make_rootfs }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kosongkan disk runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Pasang dependensi rootfs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            e2fsprogs fakeroot git img2simg jq sudo util-linux wget xz-utils zstd
+
+      - name: Siapkan source port + build tools
+        run: bash scripts/prepare-port.sh
+
+      - name: Ambil artefak build
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.device || 'angelica' }}-build
+          path: port/out
+
+      - name: Rakit rootfs
+        run: bash scripts/make-rootfs.sh
+
+      - name: Upload artefak rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.device || 'angelica' }}-flashable
+          path: |
+            port/out/*.img
+            port/out/*.zst
+            port/out/device_*.tar.xz
+          if-no-files-found: error
+          retention-days: 14

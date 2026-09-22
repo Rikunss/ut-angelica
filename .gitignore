@@ -1,0 +1,7 @@
+# Source & build result (dibuat oleh scripts/prepare-port.sh)
+/port/
+
+# Output kalau script dijalankan dengan PORT_DIR=.
+/workdir/
+/out/
+/ota/

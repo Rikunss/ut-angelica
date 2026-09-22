@@ -1,0 +1,3 @@
+# Force LF: script shell dan YAML dipakai di runner Linux — CRLF bikin
+# `#!/usr/bin/env bash` gagal dengan error "bad interpreter".
+* text=auto eol=lf
