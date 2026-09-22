@@ -211,7 +211,10 @@ Hasil: `out/device_dandelion.tar.xz`, `out/boot.img`, dst. — kernel yang sama
 - Kernel cmdline mengandung `systempart=/dev/mapper/system:ro` → device pakai dynamic
   partitions; flash system wajib via `fastbootd`.
 - `vbmeta_disabled.img` bisa dibuat sendiri dengan avbtool:
-  `avbtool make_vbmeta_image --flags 3 --padding_size 4096 -o vbmeta_disabled.img`
+  `avbtool make_vbmeta_image --flags 3 --padding_size 4096 --output vbmeta_disabled.img`
+  — perhatikan: opsinya `--output`, bukan `-o` (`avbtool` menolak `-o`).
+  Flag `3` = hashtree (1) + verification (2) disabled, sama dengan efek
+  `fastboot --disable-verity --disable-verification`.
 - Recovery image + device tarball dipakai bersama oleh ubports-installer.
 - Jika device hang di logo MI → coba flash ulang vbmeta_disabled via `mtkclient`
   (https://github.com/bkerler/mtkclient) karena MTK BROM bisa akses meski bootloader mati.

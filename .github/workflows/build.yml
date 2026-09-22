@@ -86,10 +86,14 @@ jobs:
       - name: Buat vbmeta_disabled.img
         working-directory: port
         run: |
+          # Catatan: avbtool memakai --output, BUKAN -o. Menulis -o bikin
+          # argparse gagal seketika ("unrecognized arguments"), dan karena
+          # langkah ini gagal seluruh job ikut batal.
           python3 workdir/downloads/avb/avbtool make_vbmeta_image \
-            --flags 3 --padding_size 4096 -o out/vbmeta_disabled.img
-          python3 workdir/downloads/avb/avbtool info_image \
-            --image out/vbmeta_disabled.img || true
+            --flags 3 --padding_size 4096 --output out/vbmeta_disabled.img
+          # Pastikan hasilnya benar image vbmeta (magic 'AVB0'), bukan file kosong.
+          test "$(head -c 4 out/vbmeta_disabled.img)" = "AVB0"
+          ls -l out/vbmeta_disabled.img
 
       - name: Tampilkan hasil
         run: ls -lh port/out
